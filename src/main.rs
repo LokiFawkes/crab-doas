@@ -7,7 +7,7 @@
  * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
  * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
- * TODO: Refactor so the code looks less smooth-brained. 420K with size optimizations enabled? On your bike! I need to get it smaller.
+ * TODO: Refactor so the code looks less smooth-brained. 416K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
 use std::{env, ffi::CString, fs::read_to_string, io, path::Path};
@@ -36,13 +36,10 @@ fn get_groups(user: &User) -> Vec<Gid>{
 }
 
 fn is_in_group(user: &User, group_name: &str) -> bool {
-    if let Ok(Some(group)) = Group::from_name(group_name) {
-        let user_groups = get_groups(user);
-        user_groups.contains(&group.gid)
-    }
-    else{
-        false
-    }
+    // Fixed another chunk of weird syntax here
+    let group = Group::from_name(group_name).unwrap().unwrap();
+    let user_groups = get_groups(user);
+    user_groups.contains(&group.gid)
 }
 
 fn pam_result_to_io<T>(err: PamResult<T>) -> io::Result<T>{
@@ -59,9 +56,9 @@ fn parse_config<P: AsRef<Path>>(config_path: P) -> Vec<DoasRule> {
         }
         let mut tokens = line.split_whitespace();
         let action_token = tokens.next();
-        let action = match action_token {
-            Some("permit") => Action::Permit,
-            Some("deny") => Action::Deny,
+        let action = match action_token.unwrap() {
+            "permit" => Action::Permit,
+            "deny" => Action::Deny,
             _ => continue,
         };
         let mut options = Vec::new();
@@ -173,14 +170,20 @@ fn main() -> io::Result<()> {
     let mut deny_group = false;
     let mut need_pass = true;
     for rule in config{
+        // Local permit/deny mutables. Feels too pedestrian, but allows me to evaluate multiple matched rules more gracefully
+        let mut this_permit = false;
+        let mut this_deny = false;
+        let mut this_permit_group = false;
+        let mut this_deny_group = false;
+
         let matches_user = match &rule.user{
             Some(rule_user) => rule_user == username,
             None => false,
         };
         if matches_user{
             match rule.action{
-                Action::Permit => permit = true,
-                Action::Deny => deny = true,
+                Action::Permit => this_permit = true,
+                Action::Deny => this_deny = true,
             };
         }
         let matches_group = match &rule.group{
@@ -189,31 +192,36 @@ fn main() -> io::Result<()> {
         };
         if matches_group{
             match &rule.action{
-                Action::Permit => permit_group = true,
-                Action::Deny => deny_group = true,
+                Action::Permit => this_permit_group = true,
+                Action::Deny => this_deny_group = true,
             };
         }
         if matches_user || matches_group{
             if rule.cmd != None{
-                todo!();
+                // Rudimentary support for cmd rule
+                if rule.cmd.unwrap() == command[0] {()} else { continue }
             }
             if rule.as_user != None {
                 if rule.as_user.unwrap() != target_user{
-                    eprintln!("Wrong target user");
-                    return Ok(())
+                    // Rudimentary support for as rule
+                    continue
                 }
             }
             for op in rule.options{
-                match op {
-                    _ if op.contains("nopass") => need_pass = false,
-                    _ if op.contains("persist") => eprintln!("Persist not yet implemented"),
-                    _ if op.contains("nolog") => eprintln!("Log/nolog not yet implemented"),
-                    _ if op.contains("keepenv") => eprintln!("Keepenv not yet implemented"),
-                    _ if op.contains("setenv") => eprintln!("Setenv not yet implemented"),
+                match op.as_str() { //I knew those _ if statements had to be unnecessary!
+                    "nopass" => need_pass = false,
+                    "persist" => eprintln!("Persist not yet implemented"),
+                    "nolog" => eprintln!("Log/nolog not yet implemented"),
+                    "keepenv" => eprintln!("Keepenv not yet implemented"),
+                    "setenv" => eprintln!("Setenv not yet implemented"),
                     _ => (),
                 };
             }
         }
+        permit |= this_permit;
+        permit_group |= this_permit_group;
+        deny |= this_deny;
+        deny_group |= this_deny_group;
     }
     if (permit == false && permit_group == false) || deny == true || deny_group == true {
         eprintln!("Permission denied");
