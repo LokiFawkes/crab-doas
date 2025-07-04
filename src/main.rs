@@ -232,7 +232,7 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     if need_pass == true {
-        //TODO: Research nix unistd further,
+        //TODO: Research nix unistd further, to eliminate rpassword dependency
         let password = rpassword::prompt_password(format!("doas ({}@{}) password:", username, hostname.unwrap())).expect("Failed to read password");
         if !pam_result_to_io(authenticate_user(&username, &password))? {
             eprintln!("Authentication failed");
