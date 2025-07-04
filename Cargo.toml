@@ -1,12 +1,12 @@
 [package]
 name = "crab-doas"
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-nix = "0.24"
+nix = { version = "0.30", features = ["user", "process", "hostname"] }
 pam = "0.8"
-rpassword = "7.1"
+rpassword = "7.4"
 
 [profile.release]
 strip = true

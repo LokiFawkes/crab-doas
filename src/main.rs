@@ -7,12 +7,12 @@
  * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
  * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
- * TODO: Refactor so the code looks less smooth-brained. 416K with size optimizations enabled? On your bike! I need to get it smaller.
+ * TODO: Refactor so the code looks less smooth-brained. 388K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
 use std::{env, ffi::CString, fs::read_to_string, io, path::Path};
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid};
+use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname};
 use pam::{client::Client, PamResult, PamError};
 
 enum Action{
@@ -36,7 +36,6 @@ fn get_groups(user: &User) -> Vec<Gid>{
 }
 
 fn is_in_group(user: &User, group_name: &str) -> bool {
-    // Fixed another chunk of weird syntax here
     let group = Group::from_name(group_name).unwrap().unwrap();
     let user_groups = get_groups(user);
     user_groups.contains(&group.gid)
@@ -146,10 +145,15 @@ fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
 }
 
 fn main() -> io::Result<()> {
+    // More jank to clean up later, get hostname to imitate the prompt from opendoas
+    //let mut buf = [0u8; 64];
+    let binding =  gethostname().expect("Failed getting hostname");
+    //.expect("Failed to convert hostname to string");
+    let hostname = binding.to_str();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} [-u user] <command> [arguments...]", args[0]);
-        eprintln!("Do not use in production. Features such as 'persist' and 'cmd' are not implemented");
+        eprintln!("Do not use in production! Many features such as 'persist' are not implemented.");
         return Ok(());
     }
     let mut target_user = "root".to_string();
@@ -199,23 +203,23 @@ fn main() -> io::Result<()> {
         if matches_user || matches_group{
             if rule.cmd != None{
                 // Rudimentary support for cmd rule
-                if rule.cmd.unwrap() == command[0] {()} else { continue }
+                if rule.cmd.unwrap() != command[0] { continue }
             }
             if rule.as_user != None {
-                if rule.as_user.unwrap() != target_user{
-                    // Rudimentary support for as rule
-                    continue
-                }
+                // Rudimentary support for as rule
+                if rule.as_user.unwrap() != target_user{ continue }
             }
-            for op in rule.options{
-                match op.as_str() { //I knew those _ if statements had to be unnecessary!
-                    "nopass" => need_pass = false,
-                    "persist" => eprintln!("Persist not yet implemented"),
-                    "nolog" => eprintln!("Log/nolog not yet implemented"),
-                    "keepenv" => eprintln!("Keepenv not yet implemented"),
-                    "setenv" => eprintln!("Setenv not yet implemented"),
-                    _ => (),
-                };
+            if !(this_deny || this_deny_group){
+                for op in rule.options{
+                    match op.as_str() {
+                        "nopass" => need_pass = false,
+                        "persist" => eprintln!("Persist not yet implemented"),
+                        "nolog" => eprintln!("Log/nolog not yet implemented"),
+                        "keepenv" => eprintln!("Keepenv not yet implemented"),
+                        "setenv" => eprintln!("Setenv not yet implemented"),
+                        _ => (),
+                    };
+                }
             }
         }
         permit |= this_permit;
@@ -228,7 +232,8 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
     if need_pass == true {
-        let password = rpassword::prompt_password("Password: ").expect("Failed to read password");
+        //TODO: Research nix unistd further,
+        let password = rpassword::prompt_password(format!("doas ({}@{}) password:", username, hostname.unwrap())).expect("Failed to read password");
         if !pam_result_to_io(authenticate_user(&username, &password))? {
             eprintln!("Authentication failed");
             return Ok(());
