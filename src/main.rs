@@ -145,10 +145,7 @@ fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
 }
 
 fn main() -> io::Result<()> {
-    // More jank to clean up later, get hostname to imitate the prompt from opendoas
-    //let mut buf = [0u8; 64];
     let binding =  gethostname().expect("Failed getting hostname");
-    //.expect("Failed to convert hostname to string");
     let hostname = binding.to_str();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
