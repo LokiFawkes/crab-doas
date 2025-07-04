@@ -7,12 +7,13 @@
  * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
  * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
- * TODO: Refactor so the code looks less smooth-brained. 388K with size optimizations enabled? On your bike! I need to get it smaller.
+ * TODO: Refactor so the code looks less smooth-brained. 392K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
 use std::{env, ffi::CString, fs::read_to_string, io, path::Path};
+use nix::syslog::{syslog, Facility, Severity, Priority};
 use nix::sys::wait::{waitpid, WaitStatus};
-use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname};
+use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname, getcwd};
 use pam::{client::Client, PamResult, PamError};
 
 enum Action{
@@ -73,7 +74,7 @@ fn parse_config<P: AsRef<Path>>(config_path: P) -> Vec<DoasRule> {
                 "cmd" => {
                     cmd = tokens.next().map(String::from);
                 }
-                tok if tok == "persist" || tok == "nopass" || tok == "keepenv" => {
+                tok if tok == "persist" || tok == "nopass" || tok == "keepenv" || tok == "nolog" => {
                     options.push(tok.to_string());
                 }
                 tok if tok.starts_with(':') => {
@@ -109,7 +110,6 @@ fn authenticate_user(username: &str, password: &str) -> Result<bool, PamError> {
         Err(_e) => Ok::<bool, PamError>(false),
     };
 }
-
 fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
     let pwd = User::from_name(user).unwrap().unwrap();
     let uid = pwd.uid;
@@ -145,8 +145,11 @@ fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
 }
 
 fn main() -> io::Result<()> {
-    let binding =  gethostname().expect("Failed getting hostname");
-    let hostname = binding.to_str();
+    let cwd_binding = getcwd().unwrap();
+    let cwd = cwd_binding.to_str().unwrap();
+    let mut nolog = false;
+    let hostname_binding =  gethostname().expect("Failed getting hostname");
+    let hostname = hostname_binding.to_str();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} [-u user] <command> [arguments...]", args[0]);
@@ -176,6 +179,7 @@ fn main() -> io::Result<()> {
         let mut this_deny = false;
         let mut this_permit_group = false;
         let mut this_deny_group = false;
+        let mut this_nolog = false;
 
         let matches_user = match &rule.user{
             Some(rule_user) => rule_user == username,
@@ -211,7 +215,7 @@ fn main() -> io::Result<()> {
                     match op.as_str() {
                         "nopass" => need_pass = false,
                         "persist" => eprintln!("Persist not yet implemented"),
-                        "nolog" => eprintln!("Log/nolog not yet implemented"),
+                        "nolog" => this_nolog = true,
                         "keepenv" => eprintln!("Keepenv not yet implemented"),
                         "setenv" => eprintln!("Setenv not yet implemented"),
                         _ => (),
@@ -223,9 +227,14 @@ fn main() -> io::Result<()> {
         permit_group |= this_permit_group;
         deny |= this_deny;
         deny_group |= this_deny_group;
-    }
+        nolog |= this_nolog;
+    };
     if (permit == false && permit_group == false) || deny == true || deny_group == true {
         eprintln!("Permission denied");
+        if !nolog {
+            let priority = Priority::new(Severity::LOG_NOTICE, Facility::LOG_AUTH);
+            syslog(priority, &format!("command not permitted for {}: {}", &username, command.join(" "))).unwrap();
+        }
         return Ok(());
     }
     if need_pass == true {
@@ -235,6 +244,10 @@ fn main() -> io::Result<()> {
             eprintln!("Authentication failed");
             return Ok(());
         }
+    }
+    if !nolog {
+        let priority = Priority::new(Severity::LOG_INFO, Facility::LOG_AUTH);
+        syslog(priority, &format!("{} ran command {} as {} in {}", &username, command.join(" "), &target_user, cwd)).unwrap();
     }
     run_command_as_user(&target_user, command)?;
     Ok(())
