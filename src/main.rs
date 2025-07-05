@@ -7,14 +7,25 @@
  * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
  * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
- * TODO: Refactor so the code looks less smooth-brained. 392K with size optimizations enabled? On your bike! I need to get it smaller.
+ * TODO: Refactor so the code looks less smooth-brained. 356K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
 use std::{env, ffi::CString, fs::read_to_string, io, path::Path};
+use core::ops::BitOrAssign;
 use nix::syslog::{syslog, Facility, Severity, Priority};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname, getcwd};
 use pam::{client::Client, PamResult, PamError};
+
+//Hoped this enum could reduce bloat. Too bad most of the bloat is Rust itself.
+//Setenv not implemented, it'll throw a dead code warning until I implement it.
+enum DoasOpt {
+    Persist,
+    Nopass,
+    Setenv,
+    Keepenv,
+    Nolog,
+}
 
 enum Action{
     Permit,
@@ -23,11 +34,44 @@ enum Action{
 
 struct DoasRule {
     action: Action,
-    options: Vec<String>,
+    options: Vec<DoasOpt>,
     user: Option<String>,
     group: Option<String>,
     as_user: Option<String>,
     cmd: Option<String>,
+}
+
+//Hoped this struct would reduce bloat by getting optimized. Oh well. Makes the code a bit cleaner at least.
+struct Permissions {
+    permit: bool,
+    permit_group: bool,
+    deny: bool,
+    deny_group: bool,
+    nolog: bool,
+}
+
+impl Permissions {
+    pub fn new() -> Self {
+        Permissions{
+            permit: false,
+            permit_group: false,
+            deny: false,
+            deny_group: false,
+            nolog: false,
+        }
+    }
+}
+
+
+
+impl BitOrAssign for Permissions{
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.permit |= rhs.permit;
+        self.permit_group |= rhs.permit_group;
+        self.deny |= rhs.deny;
+        self.deny_group |= rhs.deny_group;
+        self.nolog |= rhs.nolog;
+    }
 }
 
 fn get_groups(user: &User) -> Vec<Gid>{
@@ -75,7 +119,13 @@ fn parse_config<P: AsRef<Path>>(config_path: P) -> Vec<DoasRule> {
                     cmd = tokens.next().map(String::from);
                 }
                 tok if tok == "persist" || tok == "nopass" || tok == "keepenv" || tok == "nolog" => {
-                    options.push(tok.to_string());
+                    options.push(match tok {
+                        "persist" => DoasOpt::Persist,
+                        "nopass" => DoasOpt::Nopass,
+                        "keepenv" => DoasOpt::Keepenv,
+                        "nolog" => DoasOpt::Nolog,
+                        _ => continue,
+                    });
                 }
                 tok if tok.starts_with(':') => {
                     if group.is_none() {
@@ -109,6 +159,7 @@ fn authenticate_user(username: &str, password: &str) -> Result<bool, PamError> {
         Ok(()) => Ok::<bool, PamError>(true),
         Err(_e) => Ok::<bool, PamError>(false),
     };
+
 }
 fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
     let pwd = User::from_name(user).unwrap().unwrap();
@@ -147,7 +198,6 @@ fn run_command_as_user(user: &str, command: &[String]) -> io::Result<i32> {
 fn main() -> io::Result<()> {
     let cwd_binding = getcwd().unwrap();
     let cwd = cwd_binding.to_str().unwrap();
-    let mut nolog = false;
     let hostname_binding =  gethostname().expect("Failed getting hostname");
     let hostname = hostname_binding.to_str();
     let args: Vec<String> = env::args().collect();
@@ -168,18 +218,11 @@ fn main() -> io::Result<()> {
     let config = parse_config("/etc/doas.conf");
     let runuser = User::from_uid(getuid()).unwrap().unwrap();
     let username = &runuser.name;
-    let mut permit = false;
-    let mut deny = false;
-    let mut permit_group = false;
-    let mut deny_group = false;
     let mut need_pass = true;
+    let mut perms = Permissions::new();
     for rule in config{
         // Local permit/deny mutables. Feels too pedestrian, but allows me to evaluate multiple matched rules more gracefully
-        let mut this_permit = false;
-        let mut this_deny = false;
-        let mut this_permit_group = false;
-        let mut this_deny_group = false;
-        let mut this_nolog = false;
+        let mut this_perms = Permissions::new();
 
         let matches_user = match &rule.user{
             Some(rule_user) => rule_user == username,
@@ -187,9 +230,9 @@ fn main() -> io::Result<()> {
         };
         if matches_user{
             match rule.action{
-                Action::Permit => this_permit = true,
-                Action::Deny => this_deny = true,
-            };
+                Action::Permit => this_perms.permit = true,
+                Action::Deny => this_perms.deny = true,
+            }
         }
         let matches_group = match &rule.group{
             Some(rule_group) => is_in_group(&runuser, rule_group),
@@ -197,8 +240,8 @@ fn main() -> io::Result<()> {
         };
         if matches_group{
             match &rule.action{
-                Action::Permit => this_permit_group = true,
-                Action::Deny => this_deny_group = true,
+                Action::Permit => this_perms.permit_group = true,
+                Action::Deny => this_perms.deny_group = true,
             };
         }
         if matches_user || matches_group{
@@ -210,42 +253,39 @@ fn main() -> io::Result<()> {
                 // Rudimentary support for as rule
                 if rule.as_user.unwrap() != target_user{ continue }
             }
-            if !(this_deny || this_deny_group){
+            if !(this_perms.deny || this_perms.deny_group){
                 for op in rule.options{
-                    match op.as_str() {
-                        "nopass" => need_pass = false,
-                        "persist" => eprintln!("Persist not yet implemented"),
-                        "nolog" => this_nolog = true,
-                        "keepenv" => eprintln!("Keepenv not yet implemented"),
-                        "setenv" => eprintln!("Setenv not yet implemented"),
-                        _ => (),
+                    match op{
+                        DoasOpt::Nopass => need_pass = false,
+                        DoasOpt::Persist => eprintln!("Persist not yet implemented"),
+                        DoasOpt::Nolog => this_perms.nolog = true,
+                        DoasOpt::Keepenv => eprintln!("Keepenv not yet implemented"),
+                        DoasOpt::Setenv => eprintln!("Setenv not yet implemented"),
                     };
                 }
             }
         }
-        permit |= this_permit;
-        permit_group |= this_permit_group;
-        deny |= this_deny;
-        deny_group |= this_deny_group;
-        nolog |= this_nolog;
+        perms |= this_perms;
+
     };
-    if (permit == false && permit_group == false) || deny == true || deny_group == true {
+    if (perms.permit == false && perms.permit_group == false) || perms.deny == true || perms.deny_group == true {
         eprintln!("Permission denied");
-        if !nolog {
+        if !perms.nolog {
             let priority = Priority::new(Severity::LOG_NOTICE, Facility::LOG_AUTH);
             syslog(priority, &format!("command not permitted for {}: {}", &username, command.join(" "))).unwrap();
         }
         return Ok(());
     }
     if need_pass == true {
-        //TODO: Research nix unistd further, to eliminate rpassword dependency
-        let password = rpassword::prompt_password(format!("doas ({}@{}) password:", username, hostname.unwrap())).expect("Failed to read password");
+        //TODO: Try to eliminate this dependency.
+        let password = rpassword::prompt_password(format!("doas ({}@{}) password: ", username, hostname.unwrap())).expect("Failed to read password");
+
         if !pam_result_to_io(authenticate_user(&username, &password))? {
             eprintln!("Authentication failed");
             return Ok(());
         }
     }
-    if !nolog {
+    if !perms.nolog {
         let priority = Priority::new(Severity::LOG_INFO, Facility::LOG_AUTH);
         syslog(priority, &format!("{} ran command {} as {} in {}", &username, command.join(" "), &target_user, cwd)).unwrap();
     }
