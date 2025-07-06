@@ -8,13 +8,13 @@ Current implementation status: Works on my machine
 External dependency: libpam0g-dev
 
 # Features
-• PAM authentication
-• Logging
-• Option: nopass
-• Option: persist
-• Option: nolog
-• Option: cmd
-• Lots of jank just waiting to be ironed out
+* PAM authentication
+* Logging
+* Option: nopass
+* Option: persist
+* Option: nolog
+* Option: cmd
+* Lots of jank just waiting to be ironed out
 
 Persist had to be implemented differently from the way it's done in opendoas, so I changed the location of the timestamps
 
