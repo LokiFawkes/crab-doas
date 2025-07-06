@@ -7,7 +7,7 @@
  * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
  * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
- * TODO: Refactor so the code looks less smooth-brained. 356K with size optimizations enabled? On your bike! I need to get it smaller.
+ * TODO: Refactor so the code looks less smooth-brained. 364K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
 use std::{env, ffi::CString, fs::read_to_string, io, path::Path};
@@ -16,9 +16,10 @@ use nix::syslog::{syslog, Facility, Severity, Priority};
 use nix::sys::wait::{waitpid, WaitStatus};
 use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname, getcwd};
 use pam::{client::Client, PamResult, PamError};
+mod timestamp;
 
 //Hoped this enum could reduce bloat. Too bad most of the bloat is Rust itself.
-//Setenv not implemented, it'll throw a dead code warning until I implement it.
+//Setenv not implemented, it'll throw a dead code warning until I implement it, since I need to do more than just enumerate it.
 enum DoasOpt {
     Persist,
     Nopass,
@@ -202,12 +203,16 @@ fn main() -> io::Result<()> {
     let hostname = hostname_binding.to_str();
     let args: Vec<String> = env::args().collect();
     if args.len() < 3 {
-        eprintln!("Usage: {} [-u user] <command> [arguments...]", args[0]);
-        eprintln!("Do not use in production! Many features such as 'persist' are not implemented.");
+        eprintln!("Usage: {} [-L] [-u user] <command> [arguments...]", args[0]);
+        eprintln!("Do not use in production! Many features such as 'keepenv' are not implemented.");
         return Ok(());
     }
     let mut target_user = "root".to_string();
     let command_start_index;
+    if args[1] == "-L" {
+        timestamp::timestamp_clear();
+        return Ok(());
+    }
     if args.len() >= 4 && &args[1] == "-u" {
         target_user = args[2].clone();
         command_start_index = 3;
@@ -218,6 +223,7 @@ fn main() -> io::Result<()> {
     let config = parse_config("/etc/doas.conf");
     let runuser = User::from_uid(getuid()).unwrap().unwrap();
     let username = &runuser.name;
+    let mut persist = false;
     let mut need_pass = true;
     let mut perms = Permissions::new();
     for rule in config{
@@ -257,7 +263,7 @@ fn main() -> io::Result<()> {
                 for op in rule.options{
                     match op{
                         DoasOpt::Nopass => need_pass = false,
-                        DoasOpt::Persist => eprintln!("Persist not yet implemented"),
+                        DoasOpt::Persist => persist = true,
                         DoasOpt::Nolog => this_perms.nolog = true,
                         DoasOpt::Keepenv => eprintln!("Keepenv not yet implemented"),
                         DoasOpt::Setenv => eprintln!("Setenv not yet implemented"),
@@ -276,6 +282,11 @@ fn main() -> io::Result<()> {
         }
         return Ok(());
     }
+    // What's that? I'm checking for the persist rule? Yep! I added persist support! Don't expect it to be very secure, though. There be jank.
+    if persist && need_pass {
+        need_pass = !timestamp::timestamp_check(5 * 60);
+        eprintln!("need_pass: {}", need_pass);
+    }
     if need_pass == true {
         //TODO: Try to eliminate this dependency.
         let password = rpassword::prompt_password(format!("doas ({}@{}) password: ", username, hostname.unwrap())).expect("Failed to read password");
@@ -284,6 +295,9 @@ fn main() -> io::Result<()> {
             eprintln!("Authentication failed");
             return Ok(());
         }
+    }
+    if persist {
+        timestamp::timestamp_set();
     }
     if !perms.nolog {
         let priority = Priority::new(Severity::LOG_INFO, Facility::LOG_AUTH);
