@@ -202,6 +202,10 @@ fn main() -> io::Result<()> {
     let hostname_binding =  gethostname().expect("Failed getting hostname");
     let hostname = hostname_binding.to_str();
     let args: Vec<String> = env::args().collect();
+    if args[1] == "-L" {
+        timestamp::timestamp_clear();
+        return Ok(());
+    }
     if args.len() < 3 {
         eprintln!("Usage: {} [-L] [-u user] <command> [arguments...]", args[0]);
         eprintln!("Do not use in production! Many features such as 'keepenv' are not implemented.");
@@ -209,10 +213,6 @@ fn main() -> io::Result<()> {
     }
     let mut target_user = "root".to_string();
     let command_start_index;
-    if args[1] == "-L" {
-        timestamp::timestamp_clear();
-        return Ok(());
-    }
     if args.len() >= 4 && &args[1] == "-u" {
         target_user = args[2].clone();
         command_start_index = 3;
@@ -285,7 +285,6 @@ fn main() -> io::Result<()> {
     // What's that? I'm checking for the persist rule? Yep! I added persist support! Don't expect it to be very secure, though. There be jank.
     if persist && need_pass {
         need_pass = !timestamp::timestamp_check(5 * 60);
-        eprintln!("need_pass: {}", need_pass);
     }
     if need_pass == true {
         //TODO: Try to eliminate this dependency.

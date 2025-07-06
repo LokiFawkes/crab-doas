@@ -16,6 +16,7 @@
 		fs::set_permissions(path, dirperms).unwrap();
 		chown(path, Some(0), Some(0)).unwrap();
 	}
+
 	pub fn proc_info (pid: Pid) -> Procinfo{
 		let path = format!("/proc/{}/stat", pid);
 		let content : String = fs::read_to_string(&path).unwrap();
@@ -50,8 +51,9 @@
 		}
 		let tspath: &str = &timestamp_path();
 		let path = Path::new(tspath);
-		let perms = <Permissions as PermissionsExt>::from_mode(000);
+		let perms = <Permissions as PermissionsExt>::from_mode(0o000);
 		let file = File::create(path).unwrap();
+		File::options().write(true).open(path).unwrap();
 		let times: FileTimes = FileTimes::new();
 		let systime = SystemTime::now();
 		times.set_accessed(systime);
@@ -76,11 +78,10 @@
 		let systime = SystemTime::now();
 		let timeout = Duration::from_secs(secs);
 		if atim < systime - timeout || mtim < systime - timeout {
-			eprintln!("Timestamp too old");
+			unlink(path).unwrap();
 			return false;
 		}
 		if atim > systime || mtim > systime {
-			eprintln!("Timestamp too new");
 			return false;
 		}
 
