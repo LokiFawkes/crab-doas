@@ -77,7 +77,10 @@
 		let mtim = meta.modified().unwrap();
 		let systime = SystemTime::now();
 		let timeout = Duration::from_secs(secs);
-		if atim < systime - timeout || mtim < systime - timeout {
+		/* OpenDoas sets atime to boot time (time since booting even counted while sleeping) but silly crab language doesn't like setting
+		 * atime in the past and mtime in the future, and has this bad habit of not setting atime after birth, so I've lowered the scrutiny
+		 * since both times are just SystemTime::now(). Could this make doas less secure? Maybe. Let's find out.*/
+		if atim < systime - timeout && mtim < systime - timeout {
 			unlink(path).unwrap();
 			return false;
 		}
