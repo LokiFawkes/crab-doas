@@ -1,7 +1,9 @@
 	use nix::unistd::{getppid, getsid, getuid, Pid, unlink};
-	use std::{fs, fs::File, path::Path, fs::FileTimes, fs::Permissions, fs::create_dir};
-	use std::os::unix::fs::{PermissionsExt, chown};
-	use std::time::{SystemTime, Duration};
+	use nix::time::clock_gettime;
+	use nix::time::ClockId;
+	use std::io::{Read, Write};
+	use std::{fs, fs::File, path::Path, fs::Permissions, fs::create_dir};
+	use std::os::unix::fs::{PermissionsExt, chown, MetadataExt};
 
 	pub struct Procinfo {
 		ttynr: i32,
@@ -49,17 +51,16 @@
 		if !Path::new(TIMESTAMP_DIR).exists(){
 			create_timestamp_path();
 		}
+		// Gave up on replicating opendoas metadata timestamps. Timestamps are now text.
 		let tspath: &str = &timestamp_path();
 		let path = Path::new(tspath);
 		let perms = <Permissions as PermissionsExt>::from_mode(0o000);
-		let file = File::create(path).unwrap();
-		File::options().write(true).open(path).unwrap();
-		let times: FileTimes = FileTimes::new();
-		let systime = SystemTime::now();
-		times.set_accessed(systime);
-		times.set_modified(systime);
-		file.set_times(times).unwrap();
+		let mut file = File::create(path).unwrap();
+		let boottime = clock_gettime(ClockId::CLOCK_BOOTTIME).unwrap();
+		let realtime = clock_gettime(ClockId::CLOCK_REALTIME).unwrap();
 		file.set_permissions(perms).unwrap();
+		chown(path, Some(0), Some(0)).unwrap();
+		file.write(format!("{} {}", boottime.tv_sec(), realtime.tv_sec()).as_bytes()).unwrap();
 	}
 
 	pub fn timestamp_check (secs: u64) -> bool {
@@ -71,23 +72,35 @@
 		if !path.exists(){
 			return false;
 		}
-		let file = File::open(path).unwrap();
+		let mut file = File::open(path).unwrap();
+		let boottime = clock_gettime(ClockId::CLOCK_BOOTTIME).unwrap();
+		let realtime = clock_gettime(ClockId::CLOCK_REALTIME).unwrap();
 		let meta = file.metadata().unwrap();
-		let atim = meta.accessed().unwrap();
-		let mtim = meta.modified().unwrap();
-		let systime = SystemTime::now();
-		let timeout = Duration::from_secs(secs);
-		/* OpenDoas sets atime to boot time (time since booting even counted while sleeping) but silly crab language doesn't like setting
-		 * atime in the past and mtime in the future, and has this bad habit of not setting atime after birth, so I've lowered the scrutiny
-		 * since both times are just SystemTime::now(). Could this make doas less secure? Maybe. Let's find out.*/
-		if atim < systime - timeout && mtim < systime - timeout {
+		let mut contents = String::new();
+		file.read_to_string(&mut contents).unwrap();
+		let parts = contents.split(" ").collect::<Vec<&str>>();
+		if parts.len() < 2{
+			eprintln!("Invalid timestamp");
 			unlink(path).unwrap();
 			return false;
 		}
-		if atim > systime || mtim > systime {
+		let boottimestamp = parts[0].parse::<u64>().unwrap();
+		let realtimestamp = parts[1].parse::<u64>().unwrap();
+		// Using a timestamp in file data instead of metadata. Any security implications? Running this program will show you why I can't set atime or mtime despite having functions to do so.
+		if meta.permissions().mode() & 0o777 != 0o000 || meta.uid() != 0 || meta.gid() != 0 {
+			eprintln!("Timestamp permissions compromised. Timestamp deleted.");
+			chown(path.parent().unwrap(), Some(0), Some(0)).unwrap();
+			unlink(path).unwrap();
 			return false;
 		}
-
+		if boottimestamp < boottime.tv_sec().cast_unsigned() - secs || realtimestamp < realtime.tv_sec().cast_unsigned() - secs{
+			unlink(path).unwrap();
+			return false;
+		}
+		if boottimestamp > boottime.tv_sec().cast_unsigned() + 1 || realtimestamp > realtime.tv_sec().cast_unsigned() + 1{
+			unlink(path).unwrap();
+			return false;
+		}
 		return true;
 	}
 
