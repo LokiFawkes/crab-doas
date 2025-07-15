@@ -1,6 +1,5 @@
 	use nix::unistd::{getppid, getsid, getuid, Pid, unlink};
-	use nix::time::clock_gettime;
-	use nix::time::ClockId;
+	use nix::time::{clock_gettime, ClockId};
 	use std::io::{Read, Write};
 	use std::{fs, fs::File, path::Path, fs::Permissions, fs::create_dir};
 	use std::os::unix::fs::{PermissionsExt, chown, MetadataExt};
