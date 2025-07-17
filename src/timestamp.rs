@@ -50,7 +50,6 @@
 		if !Path::new(TIMESTAMP_DIR).exists(){
 			create_timestamp_path();
 		}
-		// Gave up on replicating opendoas metadata timestamps. Timestamps are now text.
 		let tspath: &str = &timestamp_path();
 		let path = Path::new(tspath);
 		let perms = <Permissions as PermissionsExt>::from_mode(0o000);
@@ -85,7 +84,6 @@
 		}
 		let boottimestamp = parts[0].parse::<u64>().unwrap();
 		let realtimestamp = parts[1].parse::<u64>().unwrap();
-		// Using a timestamp in file data instead of metadata. Any security implications? Running this program will show you why I can't set atime or mtime despite having functions to do so.
 		if meta.permissions().mode() & 0o777 != 0o000 || meta.uid() != 0 || meta.gid() != 0 {
 			eprintln!("Timestamp permissions compromised. Timestamp deleted.");
 			chown(path.parent().unwrap(), Some(0), Some(0)).unwrap();

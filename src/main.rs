@@ -4,13 +4,11 @@
  * You cannot, reasonably, rewrite Doas in Rust, and if you manage to, it will just not be as good as the original.
  * Languages are not memory safe, good code is. And no language will save you from logic errors.
  * This is the real reason rustaceans are rewriting Sudo and not Doas. Because Doas is superior.
- * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. I can't be arsed with this syntax. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
- * I can certify this program is not vibe-coded. I cannot certify that the code I studied from across the internet is not vibe-coded. It's very likely that most Rust code in the world is vibe-coded.
- * In fact, I'm pretty sure an AI would have put a lot more unsafe blocks in this. nix::unistd is a godsend.
+ * That being said, if you want a rusty Sudo replacement, please do consider forking this program and improving upon it. If it looks like the work of a C++ programmer banging his head on the desk at the weird rules of the silly crab language, that's because it is.
  * TODO: Refactor so the code looks less smooth-brained. 376K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
-use std::{env, ffi::CString, fs::read_to_string, io, path::Path,};
+use std::{env, ffi::CString, fs::read_to_string, io, path::Path, process::ExitCode};
 use core::ops::BitOrAssign;
 use nix::syslog::{syslog, Facility, Severity, Priority};
 use nix::sys::wait::{waitpid, WaitStatus};
@@ -236,8 +234,22 @@ fn run_command_as_user(user: &str, command: &[String], keepenv: bool, username: 
                 .collect();
             let c_command = c_args[0].clone();
 
-            execvp(&c_command, &c_args).expect("failed to exec");
-            Err(io::Error::last_os_error())
+            let _ = execvp(&c_command, &c_args);
+            let err = Err(io::Error::last_os_error());
+            match err {
+                Ok(err) => Ok(err),
+                Err(err) => {
+                    match err.kind() {
+                        io::ErrorKind::NotFound => {
+                            eprintln!("doas: {}: command not found", c_command.to_string_lossy());
+                            return Ok(1);
+                        },
+                        _ => {
+                            return Err(err);
+                        }
+                    }
+                }
+            }
         }
         ForkResult::Parent { child } => {
             match waitpid(child, None)? {
@@ -256,7 +268,7 @@ fn run_command_as_user(user: &str, command: &[String], keepenv: bool, username: 
     }
 }
 
-fn main() -> io::Result<()> {
+fn main() -> ExitCode {
     let cwd_binding = getcwd().unwrap();
     let cwd = cwd_binding.to_str().unwrap();
     let hostname_binding =  gethostname().expect("Failed getting hostname");
@@ -281,7 +293,7 @@ fn main() -> io::Result<()> {
                 _ if arg.contains("h") => help = true,
                 _ if arg.contains("L") => {
                     timestamp::timestamp_clear();
-                    return Ok(());
+                    return ExitCode::from(0);
                 }
                 _ if arg.contains("n") => nonint = true,
                 _ if arg.contains("s") => shell = true,
@@ -300,7 +312,7 @@ fn main() -> io::Result<()> {
     if args.len() < 2 || help{
         eprintln!("Usage: {} [-Lns] [-u user] <command> [arguments...]", args[0]);
         eprintln!("Do not use in production! Not all features of doas are implemented, many may be insecure.");
-        return Ok(());
+        return ExitCode::from(1);
     }
     if !shell {
         command = &args[command_start_index..];
@@ -380,7 +392,7 @@ fn main() -> io::Result<()> {
             let priority = Priority::new(Severity::LOG_NOTICE, Facility::LOG_AUTH);
             syslog(priority, &format!("command not permitted for {}: {}", &username, command.join(" "))).unwrap();
         }
-        return Ok(());
+        return ExitCode::from(1);
     }
     if persist && need_pass {
         need_pass = !timestamp::timestamp_check(5 * 60);
@@ -390,12 +402,12 @@ fn main() -> io::Result<()> {
         let password = rpassword::prompt_password(format!("doas ({}@{}) password: ", username, hostname.unwrap())).expect("Failed to read password");
         if nonint{
             eprintln!("Non-interactive but user needs to enter a password");
-            return Ok(());
+            return ExitCode::from(1);
         }
 
-        if !pam_result_to_io(authenticate_user(&username, &password))? {
+        if !pam_result_to_io(authenticate_user(&username, &password)).unwrap() {
             eprintln!("Authentication failed");
-            return Ok(());
+            return ExitCode::from(1);
         }
     }
     if persist {
@@ -405,6 +417,5 @@ fn main() -> io::Result<()> {
         let priority = Priority::new(Severity::LOG_INFO, Facility::LOG_AUTH);
         syslog(priority, &format!("{} ran command {} as {} in {}", &username, command.join(" "), &target_user, cwd)).unwrap();
     }
-    run_command_as_user(&target_user, command, keepenv, username, setenv, envrules)?;
-    Ok(())
+    return ExitCode::from(run_command_as_user(&target_user, command, keepenv, username, setenv, envrules).unwrap() as u8);
 }
