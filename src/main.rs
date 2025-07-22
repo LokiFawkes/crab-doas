@@ -219,10 +219,8 @@ fn run_command_as_user(user: &str, command: &[String], keepenv: bool, username: 
             setgid(gid).expect("Failed to setgid");
             setuid(uid).expect("Failed to setuid");
             if !keepenv {
-                for var in env::vars(){
-                    match var.0.as_str(){
-                        _ => unsafe {env::remove_var(var.0)},
-                    }
+                for var in env::vars(){ // Removed a match condition I ended up not using
+                    unsafe {env::remove_var(var.0)};
                 }
             }
             for var in newvars{
@@ -262,7 +260,6 @@ fn run_command_as_user(user: &str, command: &[String], keepenv: bool, username: 
                     io::ErrorKind::Other,
                     format!("Unexpected wait status: {:?}", status),
                 )),
-
             }
         }
     }
@@ -417,5 +414,19 @@ fn main() -> ExitCode {
         let priority = Priority::new(Severity::LOG_INFO, Facility::LOG_AUTH);
         syslog(priority, &format!("{} ran command {} as {} in {}", &username, command.join(" "), &target_user, cwd)).unwrap();
     }
-    return ExitCode::from(run_command_as_user(&target_user, command, keepenv, username, setenv, envrules).unwrap() as u8);
+    /* The return-expect method causes a panic if the child process dies uncleanly.
+     * The print-return method prints the error message normally, but crashing a child process like nano will leave the terminal unable to echo stdin.
+     * Comment one and uncomment the other to test them.*/
+
+    return ExitCode::from(run_command_as_user(&target_user, command, keepenv, username, setenv, envrules).expect("") as u8);
+    /*let res = run_command_as_user(&target_user, command, keepenv, username, setenv, envrules);
+    match res {
+        Ok(err) => {
+            return ExitCode::from(err as u8);
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            return ExitCode::from(1);
+        }
+    }*/
 }
