@@ -8,10 +8,12 @@
  * TODO: Refactor so the code looks less smooth-brained. 376K with size optimizations enabled? On your bike! I need to get it smaller.
  */
 
-use std::{env, ffi::CString, fs::read_to_string, io, path::Path, process::ExitCode};
+use std::{env, ffi::CString, fs::read_to_string, io, path::Path, process::ExitCode, os::unix::io::AsFd};
 use core::ops::BitOrAssign;
 use nix::syslog::{syslog, Facility, Severity, Priority};
 use nix::sys::wait::{waitpid, WaitStatus};
+//Why do I not have to put nix::sys::termios in a use line to use it?
+//use nix::sys::termios;
 use nix::unistd::{setuid, setgid, execvp, fork, ForkResult, User, Group, Gid, getgrouplist, getuid, gethostname, getcwd};
 use pam::{client::Client, PamResult, PamError};
 mod timestamp;
@@ -266,6 +268,22 @@ fn run_command_as_user(user: &str, command: &[String], keepenv: bool, username: 
 }
 
 fn main() -> ExitCode {
+    use std::io::{Write, stderr};
+    let stdin = std::io::stdin();
+    let stdin_fd = stdin.as_fd();
+    let orig_termios = {
+        match nix::sys::termios::tcgetattr(stdin_fd) {
+            Ok(val) => Some(val),
+            Err(_) => None,
+        }
+    };
+    let restore = || {
+        if let Some(t) = orig_termios {
+            let _ = nix::sys::termios::tcsetattr(stdin_fd, nix::sys::termios::SetArg::TCSANOW, &t);
+        }
+        let _ = stderr().write_all(b"\x1b[?1049l\x1b[0m");
+        let _ = stderr().flush();
+    };
     let cwd_binding = getcwd().unwrap();
     let cwd = cwd_binding.to_str().unwrap();
     let hostname_binding =  gethostname().expect("Failed getting hostname");
@@ -415,18 +433,20 @@ fn main() -> ExitCode {
         syslog(priority, &format!("{} ran command {} as {} in {}", &username, command.join(" "), &target_user, cwd)).unwrap();
     }
     /* The return-expect method causes a panic if the child process dies uncleanly.
-     * The print-return method prints the error message normally, but crashing a child process like nano will leave the terminal unable to echo stdin.
+     * The print-return method prints the error message normally, but crashing a child process like nano may mess with the terminal. I believe I have fixed it.
      * Comment one and uncomment the other to test them.*/
 
-    return ExitCode::from(run_command_as_user(&target_user, command, keepenv, username, setenv, envrules).expect("") as u8);
-    /*let res = run_command_as_user(&target_user, command, keepenv, username, setenv, envrules);
+    //return ExitCode::from(run_command_as_user(&target_user, command, keepenv, username, setenv, envrules).expect("") as u8);
+    let res = run_command_as_user(&target_user, command, keepenv, username, setenv, envrules);
     match res {
         Ok(err) => {
             return ExitCode::from(err as u8);
         }
         Err(err) => {
+            //let _ = restore_echo();
+            restore();
             eprintln!("{}", err);
             return ExitCode::from(1);
         }
-    }*/
+    }
 }

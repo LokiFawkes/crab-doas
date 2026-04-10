@@ -1,10 +1,10 @@
 [package]
 name = "crab-doas"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 
 [dependencies]
-nix = { version = "0.30", features = ["user", "process", "hostname", "syslog", "fs", "time"] }
+nix = { version = "0.31.2", features = ["user", "process", "hostname", "syslog", "fs", "time", "term"] }
 pam = "0.8"
 rpassword = "7.4"
 
